@@ -1,6 +1,4 @@
-import urllib
 import pandas as pd
-import sqlalchemy
 import streamlit as st
 
 # Configuração da página
@@ -53,58 +51,36 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# Caminho da planilha
+excel_path = 'ROGERIO (2).xlsx'
 
-# Conexão com o SQL Server (SAP / Protheus)
-@st.cache_data(ttl=300)  # Atualiza os dados a cada 5 minutos
-def load_data_from_sql():
-  db = st.secrets['sqlserver']
 
-  # Conectando usando driver ODBC do SQL Server
-  params = urllib.parse.quote_plus(
-      'DRIVER={ODBC Driver 17 for SQL Server};'
-      f"SERVER={db['server']},{db['port']};"
-      f"DATABASE={db['database']};"
-      f"UID={db['username']};"
-      f"PWD={db['password']};"
-  )
-
-  engine = sqlalchemy.create_engine(f'mssql+pyodbc:///?odbc_connect={params}')
-
-  # Consulta SQL na tabela/view do ERP
-  # Ajuste "vw_compras_suprimentos" para o nome da tabela/view real do seu ERP
-  query = """
-        SELECT 
-            NumSolic,
-            DtSolic,
-            StSolic,
-            NumPedid,
-            DtPedido,
-            StPedido,
-            DtNF,
-            Compradc
-        FROM vw_compras_suprimentos
-    """
-
-  df = pd.read_sql(query, engine)
+@st.cache_data(ttl=1)
+def load_data(path):
+  df = pd.read_excel(path)
   df.columns = [str(c).strip() for c in df.columns]
 
-  if 'Compradc' in df.columns:
-    raw_comp = df['Compradc'].astype(str).str.strip()
+  # Mapeia a coluna Compradc (Coluna N)
+  col_comp = None
+  for col in df.columns:
+    if 'comprad' in col.lower() or 'vendedor' in col.lower():
+      col_comp = col
+      break
+
+  if col_comp:
+    raw_comp = df[col_comp].astype(str).str.strip()
     df['Comprador_Clean'] = raw_comp.str.upper()
   else:
     df['Comprador_Clean'] = ''
 
-  df['Pedido_ID'] = (
-      df['NumPedid'].astype(str).str.strip()
-      if 'NumPedid' in df.columns
-      else df.index.astype(str)
-  )
-  df['Solic_ID'] = (
-      df['NumSolic'].astype(str).str.strip()
-      if 'NumSolic' in df.columns
-      else df.index.astype(str)
-  )
+  # ID de Pedidos / Solicitações
+  col_ped = 'NumPedid' if 'NumPedid' in df.columns else df.columns[0]
+  df['Pedido_ID'] = df[col_ped].astype(str).str.strip()
 
+  col_solic = 'NumSolic' if 'NumSolic' in df.columns else df.columns[0]
+  df['Solic_ID'] = df[col_solic].astype(str).str.strip()
+
+  # Datas
   for date_col in ['DtSolic', 'DtPedido', 'DtNF']:
     if date_col in df.columns:
       df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
@@ -120,8 +96,7 @@ def load_data_from_sql():
   return df
 
 
-# Carrega dados diretamente do banco SQL Server
-df_raw = load_data_from_sql()
+df_raw = load_data(excel_path)
 
 # --- CABEÇALHO ---
 st.title('📊 Resumo Executivo de Suprimentos')
@@ -157,6 +132,7 @@ else:
 # KPIs Principais do Topo
 total_solicitacoes = df['Solic_ID'].nunique()
 
+# Pedidos emitidos (exclui solicitações sem pedido emitido)
 df_pedidos_gerados = df[
     ~df['Pedido_ID'].str.lower().str.contains('aguardando|sem pedido|nan', na=False)
 ]
@@ -200,6 +176,7 @@ compradores_alvo = [
     'MARIANA',
 ]
 
+# Pedidos por Comprador Alvo
 pedidos_por_comprador = {}
 for comp in compradores_alvo:
   sub_df = df_pedidos_gerados[
@@ -208,8 +185,10 @@ for comp in compradores_alvo:
   qtd = sub_df['Pedido_ID'].nunique() if not sub_df.empty else 0
   pedidos_por_comprador[comp] = qtd
 
+# Soma total de pedidos de todos os compradores da equipe
 total_pedidos_compradores = sum(pedidos_por_comprador.values())
 
+# Exibição dos Compradores em Cards
 cols_comp = st.columns(len(compradores_alvo))
 
 for i, comp in enumerate(compradores_alvo):
@@ -228,6 +207,7 @@ for i, comp in enumerate(compradores_alvo):
 
 st.markdown('<br>', unsafe_allow_html=True)
 
+# Card de Total Consolidado dos Compradores
 col_total, _ = st.columns([1.8, 2.2])
 with col_total:
   st.markdown(
